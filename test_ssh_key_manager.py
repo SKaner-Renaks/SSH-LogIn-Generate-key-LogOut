@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
 import os
+import sys
 import ssh_key_manager
 
 class TestSSHKeyManager(unittest.TestCase):
@@ -18,12 +19,12 @@ class TestSSHKeyManager(unittest.TestCase):
 
         # Test
         result = ssh_key_manager.connect_and_setup_ssh(
-            "host", "user", None, "/local/keys", "/root"
+            "host", "user", None, "/local/keys", "/root", server_name="proxmox1"
         )
 
         # Assertions
         mock_ssh.connect.assert_called_once_with(
-            "host", username="user", key_filename=os.path.join("/local/keys", "id_rsa_proxmox"), timeout=10
+            "host", username="user", key_filename=os.path.join("/local/keys", "id_rsa_proxmox1"), timeout=10
         )
         self.assertEqual(result, mock_ssh)
 
@@ -68,14 +69,6 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_stdout_append.channel.recv_exit_status.return_value = 0
 
         # Side effect to handle multiple exec_command calls
-        # 1. test -d .ssh -> NOT_EXISTS
-        # 2. mkdir
-        # 3. chmod
-        # 4. test -f auth_keys -> NOT_EXISTS
-        # 5. touch
-        # 6. chmod
-        # 7. cat auth_keys
-        # 8. cat >> auth_keys
         mock_ssh.exec_command.side_effect = [
             (MagicMock(), mock_stdout_not_exists, MagicMock()), # test -d
             (MagicMock(), MagicMock(), MagicMock()), # mkdir
@@ -89,7 +82,7 @@ class TestSSHKeyManager(unittest.TestCase):
 
         # Test
         result = ssh_key_manager.connect_and_setup_ssh(
-            "host", "user", None, "/local/keys", "/root"
+            "host", "user", None, "/local/keys", "/root", server_name="proxmox1"
         )
 
         # Assertions
@@ -108,6 +101,26 @@ class TestSSHKeyManager(unittest.TestCase):
         # Verify key with comment was written to append
         expected_key = "ssh-rsa BASE64 user@host"
         mock_stdin_append.write.assert_any_call(f"\n{expected_key}\n")
+
+    @patch('ssh_key_manager.connect_and_setup_ssh')
+    @patch('ssh_key_manager.test_connection')
+    @patch('ssh_key_manager.disconnect_ssh')
+    @patch('ssh_key_manager.sys.exit')
+    def test_main_loop(self, mock_exit, mock_disconnect, mock_test, mock_connect):
+        # Setup SERVERS for test
+        ssh_key_manager.SERVERS = [
+            {"name": "s1", "host": "h1", "username": "u1", "password": "p1", "remote_home": "/r1"},
+            {"name": "s2", "host": "h2", "username": "u2", "password": None, "remote_home": "/r2"}
+        ]
+
+        mock_connect.side_effect = [MagicMock(), Exception("Fail")]
+
+        ssh_key_manager.main()
+
+        self.assertEqual(mock_connect.call_count, 2)
+        self.assertEqual(mock_test.call_count, 1) # s1 success, s2 fail
+        self.assertEqual(mock_disconnect.call_count, 1) # s1 success, s2 failed to connect
+        mock_exit.assert_called_with(1)
 
 if __name__ == '__main__':
     unittest.main()
