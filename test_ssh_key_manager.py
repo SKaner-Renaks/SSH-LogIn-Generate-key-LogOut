@@ -42,8 +42,6 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_ssh = MagicMock()
         mock_ssh_client.return_value = mock_ssh
 
-        # Mock connect failure for key (though not reached if exists is False)
-        # Mock connect success for password
         mock_ssh.connect.side_effect = [None] # First call for password
 
         mock_key = MagicMock()
@@ -52,9 +50,10 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_gen.return_value = mock_key
 
         # Mock exec_command for grep (duplicate check) returning 1 (not found)
+        mock_stdin = MagicMock()
         mock_stdout = MagicMock()
         mock_stdout.channel.recv_exit_status.return_value = 1
-        mock_ssh.exec_command.return_value = (None, mock_stdout, None)
+        mock_ssh.exec_command.return_value = (mock_stdin, mock_stdout, MagicMock())
 
         # Test
         result = ssh_key_manager.connect_and_setup_ssh(
@@ -65,12 +64,15 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_ssh.connect.assert_called_with("host", username="user", password="password123", timeout=10)
         mock_gen.assert_called_once_with(4096)
         mock_key.write_private_key_file.assert_called_once()
-        mock_file.assert_called_with(os.path.join("/local/keys", "id_rsa_proxmox.pub"), "w")
 
-        # Check if mkdir and echo were called
+        # Check if touch and grep were called
         calls = [c.args[0] for c in mock_ssh.exec_command.call_args_list]
-        self.assertTrue(any("mkdir -p /root/.ssh" in cmd for cmd in calls))
-        self.assertTrue(any("echo 'ssh-rsa BASE64' >> /root/.ssh/authorized_keys" in cmd for cmd in calls))
+        self.assertTrue(any("touch /root/.ssh/authorized_keys" in cmd for cmd in calls))
+        self.assertTrue(any("grep -qF - /root/.ssh/authorized_keys" in cmd for cmd in calls))
+
+        # Verify key with comment was written
+        expected_key = "ssh-rsa BASE64 user@host"
+        mock_stdin.write.assert_any_call(expected_key)
 
 if __name__ == '__main__':
     unittest.main()

@@ -9,6 +9,13 @@ def log(prefix, message):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     print(f"[{timestamp}] {prefix} {message}")
 
+def execute_remote_command(ssh, command, description=None):
+    if description:
+        log("[...]", description)
+    stdin, stdout, stderr = ssh.exec_command(command)
+    exit_status = stdout.channel.recv_exit_status()
+    return exit_status, stdout, stderr
+
 def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_dir):
     log(">>>", f"Инициализация подключения к серверу {host}...")
 
@@ -83,7 +90,8 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     new_key.write_private_key_file(private_key_path)
     os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR) # 600
 
-    public_key_str = f"{new_key.get_name()} {new_key.get_base64()}"
+    # Updated key format with comment
+    public_key_str = f"{new_key.get_name()} {new_key.get_base64()} {username}@{host}"
     with open(public_key_path, "w") as pub_file:
         pub_file.write(public_key_str)
 
@@ -95,25 +103,30 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     ssh_dir = f"{remote_home_dir}/.ssh"
     auth_keys = f"{ssh_dir}/authorized_keys"
 
-    log("[...]", f"Проверка и создание (если нужно) директории {ssh_dir}")
-    ssh.exec_command(f"mkdir -p {ssh_dir}")
-    ssh.exec_command(f"chmod 700 {ssh_dir}")
+    execute_remote_command(ssh, f"mkdir -p {ssh_dir}", f"Проверка и создание (если нужно) директории {ssh_dir}")
+    execute_remote_command(ssh, f"chmod 700 {ssh_dir}")
+    execute_remote_command(ssh, f"touch {auth_keys}", f"Обеспечение наличия файла {auth_keys}")
 
-    # Check for duplicate
-    check_cmd = f"grep -qF '{public_key_str}' {auth_keys}"
-    stdin, stdout, stderr = ssh.exec_command(check_cmd)
+    # Check for duplicate using stdin to safely pass the key string
+    log("[...]", "Проверка наличия ключа на сервере...")
+    # grep -qF - reads pattern from stdin
+    stdin, stdout, stderr = ssh.exec_command(f"grep -qF - {auth_keys}")
+    stdin.write(public_key_str)
+    stdin.channel.shutdown_write()
     exit_status = stdout.channel.recv_exit_status()
 
     if exit_status == 0:
         log("[i]", "Ключ уже присутствует на сервере, пропускаем добавление.")
     else:
         log("[...]", "Добавление публичного ключа в authorized_keys")
-        append_cmd = f"echo '{public_key_str}' >> {auth_keys}"
-        ssh.exec_command(append_cmd)
+        # Still need to be careful with append, using stdin for echo is also safer
+        stdin, stdout, stderr = ssh.exec_command(f"cat >> {auth_keys}")
+        stdin.write(f"\n{public_key_str}\n")
+        stdin.channel.shutdown_write()
+        stdout.channel.recv_exit_status()
 
-    log("[...]", "Установка строгих прав доступа (700 на .ssh, 600 на authorized_keys)")
-    ssh.exec_command(f"chmod 700 {ssh_dir}")
-    ssh.exec_command(f"chmod 600 {auth_keys}")
+    execute_remote_command(ssh, f"chmod 700 {ssh_dir}", "Установка строгих прав доступа (700 на .ssh, 600 на authorized_keys)")
+    execute_remote_command(ssh, f"chmod 600 {auth_keys}")
 
     log("[OK]", "Публичный ключ успешно установлен на сервер.")
 
@@ -161,7 +174,7 @@ def main():
         )
     except Exception as e:
         log("[X]", f"Критическая ошибка на этапе подключения: {e}")
-        print("[X] Критическая ошибка на этапе подключения. Работа скрипта остановлена.")
+        log("[X]", "Критическая ошибка на этапе подключения. Работа скрипта остановлена.")
         exit(1)
 
     try:
