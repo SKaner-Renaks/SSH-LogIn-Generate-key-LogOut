@@ -49,25 +49,42 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_key.get_base64.return_value = "BASE64"
         mock_gen.return_value = mock_key
 
-        # Mock exec_command for cat (read keys) returning some existing keys
-        mock_stdout = MagicMock()
-        mock_stdout.read.return_value = b"ssh-rsa OLD_KEY user@otherhost\n"
-        mock_stdout.channel.recv_exit_status.return_value = 0
+        # Mock outputs for existence checks
+        mock_stdout_exists = MagicMock()
+        mock_stdout_exists.read.return_value = b"EXISTS\n"
+        mock_stdout_exists.channel.recv_exit_status.return_value = 0
+
+        mock_stdout_not_exists = MagicMock()
+        mock_stdout_not_exists.read.return_value = b"NOT_EXISTS\n"
+        mock_stdout_not_exists.channel.recv_exit_status.return_value = 0
+
+        # Mock for cat authorized_keys
+        mock_stdout_cat = MagicMock()
+        mock_stdout_cat.read.return_value = b"ssh-rsa OLD_KEY user@otherhost\n"
+        mock_stdout_cat.channel.recv_exit_status.return_value = 0
 
         mock_stdin_append = MagicMock()
         mock_stdout_append = MagicMock()
         mock_stdout_append.channel.recv_exit_status.return_value = 0
 
         # Side effect to handle multiple exec_command calls
-        # 1. mkdir, 2. chmod, 3. touch, 4. cat, 5. cat >> (append), 6. chmod, 7. chmod
+        # 1. test -d .ssh -> NOT_EXISTS
+        # 2. mkdir
+        # 3. chmod
+        # 4. test -f auth_keys -> NOT_EXISTS
+        # 5. touch
+        # 6. chmod
+        # 7. cat auth_keys
+        # 8. cat >> auth_keys
         mock_ssh.exec_command.side_effect = [
+            (MagicMock(), mock_stdout_not_exists, MagicMock()), # test -d
             (MagicMock(), MagicMock(), MagicMock()), # mkdir
             (MagicMock(), MagicMock(), MagicMock()), # chmod
+            (MagicMock(), mock_stdout_not_exists, MagicMock()), # test -f
             (MagicMock(), MagicMock(), MagicMock()), # touch
-            (MagicMock(), mock_stdout, MagicMock()), # cat
+            (MagicMock(), MagicMock(), MagicMock()), # chmod
+            (MagicMock(), mock_stdout_cat, MagicMock()), # cat
             (mock_stdin_append, mock_stdout_append, MagicMock()), # cat >>
-            (MagicMock(), MagicMock(), MagicMock()), # chmod
-            (MagicMock(), MagicMock(), MagicMock()), # chmod
         ]
 
         # Test
@@ -79,13 +96,13 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_ssh.connect.assert_called_with("host", username="user", password="password123", timeout=10)
         mock_gen.assert_called_once_with(4096)
 
-        # Verify key was saved using write_private_key
-        mock_key.write_private_key.assert_called_once()
+        # Verify key was saved using write_private_key_file (OpenSSH format)
+        mock_key.write_private_key_file.assert_called_once()
 
-        # Check if touch and cat were called
+        # Check if mkdir and touch were called because we mocked NOT_EXISTS
         calls = [c.args[0] for c in mock_ssh.exec_command.call_args_list]
+        self.assertTrue(any("mkdir -p /root/.ssh" in cmd for cmd in calls))
         self.assertTrue(any("touch /root/.ssh/authorized_keys" in cmd for cmd in calls))
-        self.assertTrue(any("cat /root/.ssh/authorized_keys" in cmd for cmd in calls))
         self.assertTrue(any("cat >> /root/.ssh/authorized_keys" in cmd for cmd in calls))
 
         # Verify key with comment was written to append

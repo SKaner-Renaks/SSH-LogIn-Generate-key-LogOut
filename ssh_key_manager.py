@@ -165,10 +165,8 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
         log("[...]", f"Создание локальной директории для ключей: {local_key_dir}")
         os.makedirs(local_key_dir, mode=0o700, exist_ok=True)
 
-    # Save in PEM format (-----BEGIN RSA PRIVATE KEY-----) using text write
-    # Paramiko's write_private_key expects a file object and writes strings.
-    with open(private_key_path, "w") as priv_file:
-        new_key.write_private_key(priv_file)
+    # Save using write_private_key_file which uses OpenSSH format in Paramiko 4.0.0
+    new_key.write_private_key_file(private_key_path)
     os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR) # 600
 
     public_key_str = f"{new_key.get_name()} {new_key.get_base64()} {username}@{host}"
@@ -183,9 +181,25 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     ssh_dir = f"{remote_home_dir}/.ssh"
     auth_keys = f"{ssh_dir}/authorized_keys"
 
-    execute_remote_command(ssh, f"mkdir -p {ssh_dir}", f"Проверка и создание (если нужно) директории {ssh_dir}")
-    execute_remote_command(ssh, f"chmod 700 {ssh_dir}")
-    execute_remote_command(ssh, f"touch {auth_keys}", f"Обеспечение наличия файла {auth_keys}")
+    # Conditional directory creation
+    exit_status, stdout, stderr = execute_remote_command(ssh, f"test -d {ssh_dir} && echo 'EXISTS' || echo 'NOT_EXISTS'")
+    dir_check = stdout.read().decode().strip()
+
+    if dir_check == "NOT_EXISTS":
+        execute_remote_command(ssh, f"mkdir -p {ssh_dir}", f"Создание директории {ssh_dir}")
+        execute_remote_command(ssh, f"chmod 700 {ssh_dir}")
+    else:
+        log("[i]", f"Директория {ssh_dir} уже существует, права не изменяются.")
+
+    # Conditional file creation
+    exit_status, stdout, stderr = execute_remote_command(ssh, f"test -f {auth_keys} && echo 'EXISTS' || echo 'NOT_EXISTS'")
+    file_check = stdout.read().decode().strip()
+
+    if file_check == "NOT_EXISTS":
+        execute_remote_command(ssh, f"touch {auth_keys}", f"Создание файла {auth_keys}")
+        execute_remote_command(ssh, f"chmod 600 {auth_keys}")
+    else:
+        log("[i]", f"Файл {auth_keys} уже существует.")
 
     # Check for duplicate by reading the file and comparing lines in Python
     log("[...]", "Чтение текущих ключей с сервера...")
@@ -215,9 +229,6 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
         stdin.write(f"\n{public_key_str}\n")
         stdin.channel.shutdown_write()
         stdout.channel.recv_exit_status()
-
-    execute_remote_command(ssh, f"chmod 700 {ssh_dir}", "Установка строгих прав доступа (700 на .ssh, 600 на authorized_keys)")
-    execute_remote_command(ssh, f"chmod 600 {auth_keys}")
 
     log("[OK]", "Публичный ключ успешно установлен на сервер.")
 
