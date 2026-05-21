@@ -165,9 +165,9 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
         log("[...]", f"Создание локальной директории для ключей: {local_key_dir}")
         os.makedirs(local_key_dir, mode=0o700, exist_ok=True)
 
-    # Save in PEM format (-----BEGIN RSA PRIVATE KEY-----) using binary write
-    # to avoid line ending issues on different platforms.
-    with open(private_key_path, "wb") as priv_file:
+    # Save in PEM format (-----BEGIN RSA PRIVATE KEY-----) using text write
+    # Paramiko's write_private_key expects a file object and writes strings.
+    with open(private_key_path, "w") as priv_file:
         new_key.write_private_key(priv_file)
     os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR) # 600
 
