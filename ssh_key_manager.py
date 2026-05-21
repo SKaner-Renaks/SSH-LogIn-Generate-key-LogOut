@@ -3,15 +3,60 @@ import stat
 import datetime
 import getpass
 import paramiko
+import sys
 from paramiko.ssh_exception import AuthenticationException, SSHException
 
-def log(prefix, message):
+# ANSI Color Codes
+CLR_RESET = "\033[0m"
+CLR_TIMESTAMP = "\033[1;97m"
+CLR_OK = "\033[92m"
+CLR_X = "\033[91m"
+CLR_I = "\033[96m"
+CLR_WARN = "\033[93m"
+CLR_PROCESS = "\033[94m"
+CLR_GRAY = "\033[90m"
+CLR_CMD = "\033[1;92m"
+
+PREFIX_COLORS = {
+    "[OK]": CLR_OK,
+    "[X]": CLR_X,
+    "[i]": CLR_I,
+    "[!]": CLR_WARN,
+    "[...]": CLR_PROCESS,
+    ">>>": CLR_I,
+    "---": CLR_GRAY,
+    "***": CLR_WARN,
+    "...": CLR_PROCESS,
+    "===": CLR_TIMESTAMP,
+    " ": CLR_GRAY
+}
+
+# Determine if we should use colors
+USE_COLORS = sys.stdout.isatty()
+
+def log(prefix, message, msg_color=None):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-    print(f"[{timestamp}] {prefix} {message}")
+
+    if USE_COLORS:
+        ts_str = f"{CLR_TIMESTAMP}[{timestamp}]{CLR_RESET}"
+        pfx_color = PREFIX_COLORS.get(prefix, "")
+        pfx_str = f"{pfx_color}{prefix}{CLR_RESET}"
+
+        m_color = msg_color if msg_color else ""
+        m_reset = CLR_RESET if msg_color else ""
+        print(f"{ts_str} {pfx_str} {m_color}{message}{m_reset}")
+    else:
+        print(f"[{timestamp}] {prefix} {message}")
 
 def execute_remote_command(ssh, command, description=None):
     if description:
         log("[...]", description)
+
+    if USE_COLORS:
+        log("[...]", f"Выполнение команды: {CLR_CMD}{command}{CLR_RESET}")
+    else:
+        log("[...]", f"Выполнение команды: {command}")
+
     stdin, stdout, stderr = ssh.exec_command(command)
     exit_status = stdout.channel.recv_exit_status()
     return exit_status, stdout, stderr
@@ -87,10 +132,12 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
         log("[...]", f"Создание локальной директории для ключей: {local_key_dir}")
         os.makedirs(local_key_dir, mode=0o700, exist_ok=True)
 
-    new_key.write_private_key_file(private_key_path)
+    # Save in PEM format (-----BEGIN RSA PRIVATE KEY-----) using binary write
+    # to avoid line ending issues on different platforms.
+    with open(private_key_path, "wb") as priv_file:
+        new_key.write_private_key(priv_file)
     os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR) # 600
 
-    # Updated key format with comment
     public_key_str = f"{new_key.get_name()} {new_key.get_base64()} {username}@{host}"
     with open(public_key_path, "w") as pub_file:
         pub_file.write(public_key_str)
@@ -107,10 +154,15 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     execute_remote_command(ssh, f"chmod 700 {ssh_dir}")
     execute_remote_command(ssh, f"touch {auth_keys}", f"Обеспечение наличия файла {auth_keys}")
 
-    # Check for duplicate using stdin to safely pass the key string
+    # Check for duplicate
     log("[...]", "Проверка наличия ключа на сервере...")
-    # grep -qF - reads pattern from stdin
-    stdin, stdout, stderr = ssh.exec_command(f"grep -qF - {auth_keys}")
+    grep_cmd = f"grep -qF - {auth_keys}"
+    if USE_COLORS:
+        log("[...]", f"Выполнение команды: {CLR_CMD}{grep_cmd}{CLR_RESET}")
+    else:
+        log("[...]", f"Выполнение команды: {grep_cmd}")
+
+    stdin, stdout, stderr = ssh.exec_command(grep_cmd)
     stdin.write(public_key_str)
     stdin.channel.shutdown_write()
     exit_status = stdout.channel.recv_exit_status()
@@ -119,8 +171,13 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
         log("[i]", "Ключ уже присутствует на сервере, пропускаем добавление.")
     else:
         log("[...]", "Добавление публичного ключа в authorized_keys")
-        # Still need to be careful with append, using stdin for echo is also safer
-        stdin, stdout, stderr = ssh.exec_command(f"cat >> {auth_keys}")
+        cat_cmd = f"cat >> {auth_keys}"
+        if USE_COLORS:
+            log("[...]", f"Выполнение команды: {CLR_CMD}{cat_cmd}{CLR_RESET}")
+        else:
+            log("[...]", f"Выполнение команды: {cat_cmd}")
+
+        stdin, stdout, stderr = ssh.exec_command(cat_cmd)
         stdin.write(f"\n{public_key_str}\n")
         stdin.channel.shutdown_write()
         stdout.channel.recv_exit_status()
@@ -133,14 +190,19 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     return ssh
 
 def test_connection(ssh_session):
-    log(">>>", "Выполнение тестовой команды на сервере...")
-    stdin, stdout, stderr = ssh_session.exec_command("ls -la /")
+    test_cmd = "ls -la /"
+    if USE_COLORS:
+        log(">>>", f"Выполнение тестовой команды \"{CLR_CMD}{test_cmd}{CLR_RESET}\" на сервере...")
+    else:
+        log(">>>", f"Выполнение тестовой команды \"{test_cmd}\" на сервере...")
+
+    stdin, stdout, stderr = ssh_session.exec_command(test_cmd)
     exit_status = stdout.channel.recv_exit_status()
 
     if exit_status == 0:
         log("---", "Содержимое корневой директории (подтверждение подключения) ---")
         for line in stdout:
-            log(" ", line.strip())
+            log(" ", line.strip(), msg_color=CLR_GRAY if USE_COLORS else None)
         log("---", "Конец вывода ---")
         log("[OK]", "Тестовая команда выполнена успешно.")
     else:

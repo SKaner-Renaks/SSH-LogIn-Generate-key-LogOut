@@ -63,7 +63,9 @@ class TestSSHKeyManager(unittest.TestCase):
         # Assertions
         mock_ssh.connect.assert_called_with("host", username="user", password="password123", timeout=10)
         mock_gen.assert_called_once_with(4096)
-        mock_key.write_private_key_file.assert_called_once()
+
+        # Verify key was saved using write_private_key
+        mock_key.write_private_key.assert_called_once()
 
         # Check if touch and grep were called
         calls = [c.args[0] for c in mock_ssh.exec_command.call_args_list]
