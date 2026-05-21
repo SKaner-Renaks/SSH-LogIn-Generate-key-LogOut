@@ -4,6 +4,7 @@ import datetime
 import getpass
 import paramiko
 import sys
+import ctypes
 from paramiko.ssh_exception import AuthenticationException, SSHException
 
 # ANSI Color Codes
@@ -31,8 +32,40 @@ PREFIX_COLORS = {
     " ": CLR_GRAY
 }
 
+def enable_windows_ansi(use_colors):
+    """
+    Enables ANSI escape sequence processing on Windows consoles.
+    Returns the updated use_colors flag.
+    """
+    if not use_colors:
+        return False
+
+    if sys.platform != "win32":
+        return use_colors
+
+    try:
+        # Get standard output handle
+        # -11 is STD_OUTPUT_HANDLE
+        kernel32 = ctypes.windll.kernel32
+        stdout_handle = kernel32.GetStdHandle(-11)
+
+        # Get current console mode
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(stdout_handle, ctypes.byref(mode)):
+            return False
+
+        # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        new_mode = mode.value | 0x0004
+        if not kernel32.SetConsoleMode(stdout_handle, new_mode):
+            return False
+
+        return True
+    except Exception:
+        return False
+
 # Determine if we should use colors
 USE_COLORS = sys.stdout.isatty()
+USE_COLORS = enable_windows_ansi(USE_COLORS)
 
 def log(prefix, message, msg_color=None):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
