@@ -187,30 +187,31 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     execute_remote_command(ssh, f"chmod 700 {ssh_dir}")
     execute_remote_command(ssh, f"touch {auth_keys}", f"Обеспечение наличия файла {auth_keys}")
 
-    # Check for duplicate
-    log("[...]", "Проверка наличия ключа на сервере...")
-    grep_cmd = f"grep -qF - {auth_keys}"
-    if USE_COLORS:
-        log("[...]", f"Выполнение команды: {CLR_CMD}{grep_cmd}{CLR_RESET}")
-    else:
-        log("[...]", f"Выполнение команды: {grep_cmd}")
+    # Check for duplicate by reading the file and comparing lines in Python
+    log("[...]", "Чтение текущих ключей с сервера...")
+    cat_read_cmd = f"cat {auth_keys}"
+    exit_status, stdout, stderr = execute_remote_command(ssh, cat_read_cmd)
 
-    stdin, stdout, stderr = ssh.exec_command(grep_cmd)
-    stdin.write(public_key_str)
-    stdin.channel.shutdown_write()
-    exit_status = stdout.channel.recv_exit_status()
+    existing_keys = stdout.read().decode().splitlines()
+    key_already_exists = False
 
-    if exit_status == 0:
+    target_key_stripped = public_key_str.strip()
+    for line in existing_keys:
+        if line.strip() == target_key_stripped:
+            key_already_exists = True
+            break
+
+    if key_already_exists:
         log("[i]", "Ключ уже присутствует на сервере, пропускаем добавление.")
     else:
         log("[...]", "Добавление публичного ключа в authorized_keys")
-        cat_cmd = f"cat >> {auth_keys}"
+        cat_append_cmd = f"cat >> {auth_keys}"
         if USE_COLORS:
-            log("[...]", f"Выполнение команды: {CLR_CMD}{cat_cmd}{CLR_RESET}")
+            log("[...]", f"Выполнение команды: {CLR_CMD}{cat_append_cmd}{CLR_RESET}")
         else:
-            log("[...]", f"Выполнение команды: {cat_cmd}")
+            log("[...]", f"Выполнение команды: {cat_append_cmd}")
 
-        stdin, stdout, stderr = ssh.exec_command(cat_cmd)
+        stdin, stdout, stderr = ssh.exec_command(cat_append_cmd)
         stdin.write(f"\n{public_key_str}\n")
         stdin.channel.shutdown_write()
         stdout.channel.recv_exit_status()
