@@ -324,7 +324,7 @@ def main():
     except NameError:
         script_dir = os.getcwd()
 
-    config_path = os.path.join(script_dir, "ssh_manager_id.cfg")
+    config_path = os.path.join(script_dir, "ssh_manager.cfg")
 
     # Проверка существования конфигурации
     if not os.path.exists(config_path):
@@ -336,6 +336,7 @@ def main():
                 {
                     "name": "Server1",
                     "host": "127.0.0.1",
+                    "enabled": True,
                     "username": "root",
                     "password": None,
                     "remote_home": "/root"
@@ -393,6 +394,11 @@ def main():
     failed_servers = []
 
     for server in servers:
+        if not server.get("enabled", True):
+            display_name = server.get("name") or server.get("host", "неизвестный")
+            log("[i]", f"Сервер {display_name} отключён (enabled: false), пропуск.")
+            continue
+
         host = server.get("host")
         if not host:
             log("[!]", "Пропуск сервера без указания host.")

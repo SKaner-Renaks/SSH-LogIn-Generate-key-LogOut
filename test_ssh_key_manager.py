@@ -96,18 +96,18 @@ class TestSSHKeyManager(unittest.TestCase):
         self.assertNotIn("ssh-rsa OTHER_KEY user@host:proxmox1:old-uuid", written_content)
 
     @patch('ssh_key_manager.os.path.exists')
-    @patch('ssh_key_manager.open', new_callable=mock_open, read_data='{"uuid": "u1", "servers": [{"host": "h1"}]}')
+    @patch('ssh_key_manager.open', new_callable=mock_open, read_data='{"uuid": "u1", "servers": [{"host": "h1", "enabled": true}, {"host": "h2", "enabled": false}]}')
     @patch('ssh_key_manager.connect_and_setup_ssh')
     @patch('ssh_key_manager.test_connection')
     @patch('ssh_key_manager.disconnect_ssh')
     @patch('ssh_key_manager.sys.exit')
-    def test_main_config_loading(self, mock_exit, mock_disconnect, mock_test, mock_connect, mock_file, mock_exists):
+    def test_main_config_loading_and_skipping(self, mock_exit, mock_disconnect, mock_test, mock_connect, mock_file, mock_exists):
         mock_exists.return_value = True # config exists
 
         ssh_key_manager.main()
 
-        # Verify connect called with host from config
-        mock_connect.assert_called()
+        # Verify connect called only for h1
+        self.assertEqual(mock_connect.call_count, 1)
         self.assertEqual(mock_connect.call_args.kwargs['host'], "h1")
         self.assertEqual(mock_connect.call_args.kwargs['instance_id'], "u1")
 
