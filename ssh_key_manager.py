@@ -241,15 +241,18 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
 
         if search_pattern in stripped_line:
             if instance_id in stripped_line:
-                # Наш актуальный ключ
                 if stripped_line == target_key_stripped:
+                    # Точное совпадение — ключ уже на сервере
                     current_key_present = True
-                new_lines.append(stripped_line)
+                    new_lines.append(stripped_line)
+                else:
+                    # UUID совпадает, но контент ключа другой — это старый ключ
+                    old_keys_found.append(stripped_line)
             else:
-                # Старый ключ этого же скрипта (другой UUID)
+                # UUID отличается — это старый ключ другого экземпляра/времени
                 old_keys_found.append(stripped_line)
         else:
-            # Чужой ключ
+            # Чужой ключ, не имеющий нашего паттерна в комментарии
             new_lines.append(stripped_line)
 
     if old_keys_found:
@@ -320,11 +323,14 @@ def main():
     log("===", "Запуск скрипта управления SSH-подключениями ===")
 
     try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        script_full_path = os.path.abspath(__file__)
+        script_dir = os.path.dirname(script_full_path)
+        script_name = os.path.splitext(os.path.basename(script_full_path))[0]
     except NameError:
         script_dir = os.getcwd()
+        script_name = "ssh_key_manager"
 
-    config_path = os.path.join(script_dir, "ssh_manager.cfg")
+    config_path = os.path.join(script_dir, f"{script_name}.cfg")
 
     # Проверка существования конфигурации
     if not os.path.exists(config_path):

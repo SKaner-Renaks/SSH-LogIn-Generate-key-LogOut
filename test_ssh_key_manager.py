@@ -62,9 +62,16 @@ class TestSSHKeyManager(unittest.TestCase):
         mock_stdout_not_exists.read.return_value = b"NOT_EXISTS\n"
         mock_stdout_not_exists.channel.recv_exit_status.return_value = 0
 
-        # Mock for cat authorized_keys with an old key from same script (different UUID)
+        # Mock for cat authorized_keys:
+        # 1. OLD_KEY_DIFF_UUID: different UUID (should be cleaned)
+        # 2. OLD_KEY_SAME_UUID: same UUID but different key (should be cleaned)
+        # 3. MANUAL_KEY: shouldn't be touched
         mock_stdout_cat = MagicMock()
-        mock_stdout_cat.read.return_value = b"ssh-rsa OTHER_KEY user@host:proxmox1:old-uuid\nssh-rsa MANUAL_KEY user@other\n"
+        mock_stdout_cat.read.return_value = (
+            b"ssh-rsa DIFF_UUID_KEY user@host:proxmox1:other-uuid\n"
+            b"ssh-rsa SAME_UUID_OLD_KEY user@host:proxmox1:new-uuid\n"
+            b"ssh-rsa MANUAL_KEY user@other\n"
+        )
         mock_stdout_cat.channel.recv_exit_status.return_value = 0
 
         mock_stdin_write = MagicMock()
@@ -89,11 +96,12 @@ class TestSSHKeyManager(unittest.TestCase):
         expected_key = "ssh-rsa BASE64 user@host:proxmox1:new-uuid"
 
         # 2. Verify content written to cat >
-        # Should contain MANUAL_KEY and NEW_KEY, but NOT OLD_KEY (because we said 'y')
+        # Should contain MANUAL_KEY and NEW_KEY, but NOT the old keys
         written_content = mock_stdin_write.write.call_args[0][0]
         self.assertIn("ssh-rsa MANUAL_KEY user@other", written_content)
         self.assertIn(expected_key, written_content)
-        self.assertNotIn("ssh-rsa OTHER_KEY user@host:proxmox1:old-uuid", written_content)
+        self.assertNotIn("ssh-rsa DIFF_UUID_KEY user@host:proxmox1:other-uuid", written_content)
+        self.assertNotIn("ssh-rsa SAME_UUID_OLD_KEY user@host:proxmox1:new-uuid", written_content)
 
     @patch('ssh_key_manager.os.path.exists')
     @patch('ssh_key_manager.open', new_callable=mock_open, read_data='{"uuid": "u1", "servers": [{"host": "h1", "enabled": true}, {"host": "h2", "enabled": false}]}')
@@ -123,6 +131,8 @@ class TestSSHKeyManager(unittest.TestCase):
 
         # Should write template and exit(0)
         mock_file().write.assert_called()
+        # Verify it tries to create config based on script name (test_ssh_key_manager in this test environment usually)
+        # But in mocked test_main, we can just check if it was called
         mock_exit.assert_called_with(0)
 
 if __name__ == '__main__':
