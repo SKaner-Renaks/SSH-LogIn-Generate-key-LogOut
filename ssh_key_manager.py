@@ -5,34 +5,16 @@ import getpass
 import paramiko
 import sys
 import ctypes
+import json
+import uuid
 from paramiko.ssh_exception import AuthenticationException, SSHException
 
 """
 Скрипт для автоматизированного управления SSH-ключами на нескольких серверах.
-Позволяет генерировать ключи, развертывать их на удаленных серверах и проверять подключение.
+Использует JSON-конфигурацию и UUID для идентификации экземпляров ключей.
 """
 
 # --- БЛОК ГЛОБАЛЬНЫХ КОНСТАНТ ---
-
-# Список серверов для обработки
-# name: уникальное имя сервера (используется для именования файлов ключей)
-# host: IP-адрес или доменное имя сервера
-# username: имя пользователя для SSH-подключения
-# password: пароль (если None, будет запрошен интерактивно)
-# remote_home: домашняя директория пользователя на сервере
-SERVERS = [
-    {
-        "name": "proxmox1",
-        "host": "127.0.0.1",
-        "username": "root",
-        "password": None,
-        "remote_home": "/root",
-    }
-]
-
-# Путь к директории для хранения ключей.
-# Если None — создается папка 'ssh_keys' в директории со скриптом.
-LOCAL_KEY_DIR = None
 
 # Таймаут подключения к SSH в секундах
 SSH_TIMEOUT = 10
@@ -69,10 +51,6 @@ PREFIX_COLORS = {
 def enable_windows_ansi(use_colors):
     """
     Включает обработку ANSI-последовательностей в консоли Windows 10/11.
-    Это позволяет отображать цвета в CMD и PowerShell.
-
-    :param use_colors: Текущий флаг использования цветов
-    :return: Обновленный флаг использования цветов
     """
     if not use_colors:
         return False
@@ -81,35 +59,25 @@ def enable_windows_ansi(use_colors):
         return use_colors
 
     try:
-        # Получаем дескриптор стандартного вывода (-11 = STD_OUTPUT_HANDLE)
         kernel32 = ctypes.windll.kernel32
         stdout_handle = kernel32.GetStdHandle(-11)
-
-        # Получаем текущий режим консоли
         mode = ctypes.c_uint32()
         if not kernel32.GetConsoleMode(stdout_handle, ctypes.byref(mode)):
             return False
-
-        # Включаем флаг ENABLE_VIRTUAL_TERMINAL_PROCESSING (0x0004)
         new_mode = mode.value | 0x0004
         if not kernel32.SetConsoleMode(stdout_handle, new_mode):
             return False
-
         return True
     except Exception:
         return False
 
-# Определяем, нужно ли использовать цвета (только если вывод идет в терминал)
+# Определяем, нужно ли использовать цвета
 USE_COLORS = sys.stdout.isatty()
 USE_COLORS = enable_windows_ansi(USE_COLORS)
 
 def log(prefix, message, msg_color=None):
     """
     Выводит форматированное сообщение в консоль с меткой времени.
-
-    :param prefix: Префикс сообщения (например, [OK], [X])
-    :param message: Текст сообщения
-    :param msg_color: Опциональный цвет для самого сообщения
     """
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -140,25 +108,13 @@ def execute_remote_command(ssh, command, description=None):
     exit_status = stdout.channel.recv_exit_status()
     return exit_status, stdout, stderr
 
-def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_dir, server_name=None):
+def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_dir, instance_id, server_name=None):
     """
-    Основной алгоритм настройки SSH доступа:
-    1. Проверка наличия локального ключа.
-    2. Попытка входа по ключу.
-    3. При неуспехе — попытка входа по паролю (из конфига или интерактивно).
-    4. Генерация новой пары ключей (если нужно).
-    5. Развертывание публичного ключа на сервере.
-
-    :param host: Адрес сервера
-    :param username: Имя пользователя
-    :param password: Пароль (может быть None)
-    :param local_key_dir: Директория для хранения ключей
-    :param remote_home_dir: Домашняя папка на сервере
-    :param server_name: Имя сервера для названия файла ключа
+    Основной алгоритм настройки SSH доступа с использованием UUID.
     """
     log(">>>", f"Инициализация подключения к серверу {host}...")
 
-    # Формируем имя файла ключа
+    # Формируем имя для файлов и комментариев
     if server_name:
         clean_name = server_name
     else:
@@ -192,7 +148,6 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     # 2. Аутентификация по паролю
     log("***", "Требуется парольная аутентификация ***")
 
-    # Пробуем пароль из конфигурации
     if password:
         log("[...]", "Попытка входа с паролем из конфигурации.")
         try:
@@ -204,7 +159,6 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
             log("[X]", f"Ошибка сети или подключения: {e}")
             raise e
 
-    # Интерактивный ввод пароля
     if not session_established:
         log("[!]", "Требуется интерактивный ввод пароля.")
         log("[i]", f"Пользователь: {username}")
@@ -232,12 +186,11 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
         log("[...]", f"Создание директории для ключей: {local_key_dir}")
         os.makedirs(local_key_dir, mode=0o700, exist_ok=True)
 
-    # Сохраняем приватный ключ в формате OpenSSH
     new_key.write_private_key_file(private_key_path)
-    os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR) # 600
+    os.chmod(private_key_path, stat.S_IRUSR | stat.S_IWUSR)
 
-    # Формируем строку публичного ключа
-    public_key_str = f"{new_key.get_name()} {new_key.get_base64()} {username}@{host}"
+    # Формируем строку публичного ключа с UUID
+    public_key_str = f"{new_key.get_name()} {new_key.get_base64()} {username}@{host}:{clean_name}:{instance_id}"
     with open(public_key_path, "w") as pub_file:
         pub_file.write(public_key_str)
 
@@ -249,7 +202,7 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     ssh_dir = f"{remote_home_dir}/.ssh"
     auth_keys = f"{ssh_dir}/authorized_keys"
 
-    # Проверка и создание .ssh
+    # Проверка .ssh
     exit_status, stdout, stderr = execute_remote_command(ssh, f"test -d {ssh_dir} && echo 'EXISTS' || echo 'NOT_EXISTS'")
     dir_check = stdout.read().decode().strip()
 
@@ -259,7 +212,7 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     else:
         log("[i]", f"Директория {ssh_dir} уже существует.")
 
-    # Проверка и создание authorized_keys
+    # Проверка authorized_keys
     exit_status, stdout, stderr = execute_remote_command(ssh, f"test -f {auth_keys} && echo 'EXISTS' || echo 'NOT_EXISTS'")
     file_check = stdout.read().decode().strip()
 
@@ -269,29 +222,67 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     else:
         log("[i]", f"Файл {auth_keys} уже существует.")
 
-    # Проверка на дубликаты
-    log("[...]", "Проверка ключа в authorized_keys...")
+    # Очистка старых ключей по UUID и добавление нового
+    log("[...]", "Анализ ключей в authorized_keys...")
     exit_status, stdout, stderr = execute_remote_command(ssh, f"cat {auth_keys}")
 
-    existing_keys = stdout.read().decode().splitlines()
-    key_already_exists = False
+    existing_lines = stdout.read().decode().splitlines()
+    search_pattern = f"{username}@{host}:{clean_name}:"
+
+    new_lines = []
+    old_keys_found = []
+    current_key_present = False
     target_key_stripped = public_key_str.strip()
 
-    for line in existing_keys:
-        if line.strip() == target_key_stripped:
-            key_already_exists = True
-            break
+    for line in existing_lines:
+        stripped_line = line.strip()
+        if not stripped_line:
+            continue
 
-    if key_already_exists:
-        log("[i]", "Ключ уже присутствует на сервере.")
+        if search_pattern in stripped_line:
+            if instance_id in stripped_line:
+                # Наш актуальный ключ
+                if stripped_line == target_key_stripped:
+                    current_key_present = True
+                new_lines.append(stripped_line)
+            else:
+                # Старый ключ этого же скрипта (другой UUID)
+                old_keys_found.append(stripped_line)
+        else:
+            # Чужой ключ
+            new_lines.append(stripped_line)
+
+    if old_keys_found:
+        log("[!]", f"На сервере найдены старые ключи ({len(old_keys_found)}) для {clean_name}.")
+        # Используем sys.stdout.write и sys.stdin.readline для интерактивности
+        prompt = f"{CLR_WARN}[?] Удалить их? (y/n): {CLR_RESET}"
+        if USE_COLORS:
+            print(prompt, end="", flush=True)
+        else:
+            print(f"[?] Удалить их? (y/n): ", end="", flush=True)
+
+        choice = sys.stdin.readline().strip().lower()
+        if choice == 'y':
+            log("[...]", "Старые ключи удалены из списка записи.")
+        else:
+            log("[i]", "Старые ключи оставлены в файле.")
+            new_lines.extend(old_keys_found)
+
+    if not current_key_present:
+        new_lines.append(target_key_stripped)
+        log("[...]", "Добавление актуального ключа в список.")
     else:
-        log("[...]", "Добавление ключа...")
-        stdin, stdout, stderr = ssh.exec_command(f"cat >> {auth_keys}")
-        stdin.write(f"\n{public_key_str}\n")
-        stdin.channel.shutdown_write()
-        stdout.channel.recv_exit_status()
-        log("[OK]", "Ключ успешно добавлен.")
+        log("[i]", "Актуальный ключ уже присутствует в списке.")
 
+    # Полная перезапись через cat >
+    log("[...]", "Запись обновленного файла authorized_keys...")
+    full_content = "\n".join(new_lines) + "\n"
+    stdin, stdout, stderr = ssh.exec_command(f"cat > {auth_keys}")
+    stdin.write(full_content)
+    stdin.channel.shutdown_write()
+    stdout.channel.recv_exit_status()
+
+    log("[OK]", "Публичный ключ успешно развернут.")
     return ssh
 
 def test_connection(ssh_session):
@@ -324,28 +315,92 @@ def disconnect_ssh(ssh_session):
 
 def main():
     """
-    Основной цикл обработки серверов.
+    Загрузка конфигурации и основной цикл обработки.
     """
     log("===", "Запуск скрипта управления SSH-подключениями ===")
 
-    # Определение рабочей директории для ключей
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         script_dir = os.getcwd()
 
-    if LOCAL_KEY_DIR is None:
+    config_path = os.path.join(script_dir, "ssh_manager_id.cfg")
+
+    # Проверка существования конфигурации
+    if not os.path.exists(config_path):
+        template = {
+            "_comment": "Конфигурация скрипта управления SSH-ключами. UUID заполняется автоматически.",
+            "uuid": None,
+            "local_key_dir": None,
+            "servers": [
+                {
+                    "name": "Server1",
+                    "host": "127.0.0.1",
+                    "username": "root",
+                    "password": None,
+                    "remote_home": "/root"
+                }
+            ]
+        }
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(template, f, indent=4, ensure_ascii=False)
+            log("[i]", f"Создан файл конфигурации: {config_path}")
+            log("[!]", "Заполните список серверов и запустите скрипт снова.")
+        except Exception as e:
+            log("[X]", f"Не удалось создать файл конфигурации: {e}")
+            sys.exit(1)
+        sys.exit(0)
+
+    # Чтение конфигурации
+    config = None
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except Exception as e:
+        log("[X]", f"Ошибка чтения конфигурации: {e}")
+        sys.exit(1)
+
+    if config is None:
+        log("[X]", "Ошибка чтения конфигурации: пустой файл.")
+        sys.exit(1)
+
+    # Проверка UUID
+    instance_id = config.get("uuid")
+    if instance_id is None:
+        instance_id = str(uuid.uuid4())
+        config["uuid"] = instance_id
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+            log("[i]", f"Сгенерирован новый UUID для этого экземпляра: {instance_id}")
+        except Exception as e:
+            log("[X]", f"Не удалось обновить файл конфигурации с UUID: {e}")
+            sys.exit(1)
+
+    # Настройка директории ключей
+    l_key_dir = config.get("local_key_dir")
+    if l_key_dir is None:
         local_key_dir = os.path.join(script_dir, "ssh_keys")
     else:
-        local_key_dir = LOCAL_KEY_DIR
+        local_key_dir = l_key_dir
+
+    servers = config.get("servers", [])
+    if not servers:
+        log("[!]", "Список серверов пуст.")
+        sys.exit(0)
 
     failed_servers = []
 
-    for server in SERVERS:
+    for server in servers:
         host = server.get("host")
+        if not host:
+            log("[!]", "Пропуск сервера без указания host.")
+            continue
+
         name = server.get("name")
         display_name = name or host
-        user = server.get("username")
+        user = server.get("username", "root")
         pwd = server.get("password")
         home = server.get("remote_home", "/root")
 
@@ -359,11 +414,12 @@ def main():
                 password=pwd,
                 local_key_dir=local_key_dir,
                 remote_home_dir=home,
+                instance_id=instance_id,
                 server_name=name
             )
 
             test_connection(ssh_session)
-            log("[OK]", f"Сервер {name} ({host}) обработан успешно.")
+            log("[OK]", f"Сервер {display_name} ({host}) обработан успешно.")
 
         except Exception as e:
             log("[X]", f"Ошибка при работе с сервером {display_name} ({host}): {e}")
