@@ -176,7 +176,7 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
 
     # 1. Попытка аутентификации по ключу
     if key_exists:
-        log("[i]", f"Найден локальный ключ {key_filename}. Попытка аутентификации...")
+        log("[i]", f"Найден локальный ключ {CLR_CMD}{key_filename}{CLR_RESET}. Попытка аутентификации...")
         try:
             ssh.connect(host, username=username, key_filename=private_key_path, timeout=SSH_TIMEOUT)
             log("[OK]", "Аутентификация по ключу прошла успешно.")
@@ -241,7 +241,7 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     with open(public_key_path, "w") as pub_file:
         pub_file.write(public_key_str)
 
-    log("[OK]", f"Локальные ключи сохранены: {key_filename}")
+    log("[OK]", f"Локальные ключи сохранены: {CLR_CMD}{key_filename}{CLR_RESET}")
 
     # 4. Развертывание ключа на сервере
     log("[...]", f"Развертывание публичного ключа на сервере {host}...")
@@ -299,7 +299,7 @@ def test_connection(ssh_session):
     Выполняет тестовую команду для проверки работоспособности сессии.
     """
     test_cmd = "ls -la /"
-    log(">>>", f"Выполнение тестовой команды на сервере...")
+    log(">>>", f"Выполнение тестовой команды \"{CLR_CMD}{test_cmd}{CLR_RESET}\" на сервере...")
 
     stdin, stdout, stderr = ssh_session.exec_command(test_cmd)
     exit_status = stdout.channel.recv_exit_status()
@@ -343,12 +343,13 @@ def main():
 
     for server in SERVERS:
         host = server.get("host")
-        name = server.get("name") or host
+        name = server.get("name")
+        display_name = name or host
         user = server.get("username")
         pwd = server.get("password")
         home = server.get("remote_home", "/root")
 
-        log("===", f"Обработка сервера: {name} ({host})")
+        log("===", f"Обработка сервера: {display_name} ({host})")
 
         ssh_session = None
         try:
@@ -365,8 +366,8 @@ def main():
             log("[OK]", f"Сервер {name} ({host}) обработан успешно.")
 
         except Exception as e:
-            log("[X]", f"Ошибка при работе с сервером {name} ({host}): {e}")
-            failed_servers.append((name, host, str(e)))
+            log("[X]", f"Ошибка при работе с сервером {display_name} ({host}): {e}")
+            failed_servers.append((display_name, host, str(e)))
 
         finally:
             if ssh_session:
