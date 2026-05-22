@@ -19,8 +19,8 @@ from paramiko.ssh_exception import AuthenticationException, SSHException
 # Таймаут подключения к SSH в секундах
 SSH_TIMEOUT = 10
 
-# Размер генерируемого RSA-ключа в битах
-KEY_SIZE = 4096
+# Размер генерируемого RSA-ключа в битах по умолчанию (рекомендовано 3072)
+KEY_SIZE = 3072
 
 # ANSI Color Codes (Цветовые коды для вывода в консоль)
 CLR_RESET = "\033[0m"
@@ -108,7 +108,7 @@ def execute_remote_command(ssh, command, description=None):
     exit_status = stdout.channel.recv_exit_status()
     return exit_status, stdout, stderr
 
-def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_dir, instance_id, server_name=None):
+def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_dir, instance_id, server_name=None, key_size=KEY_SIZE):
     """
     Основной алгоритм настройки SSH доступа с использованием UUID.
     """
@@ -178,8 +178,8 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     if key_exists:
         log("[!]", "Внимание: старый локальный ключ будет заменён новым.")
 
-    log("[...]", f"Генерация новой пары RSA-ключей ({KEY_SIZE} бит)...")
-    new_key = paramiko.RSAKey.generate(KEY_SIZE)
+    log("[...]", f"Генерация новой пары RSA-ключей ({key_size} бит)...")
+    new_key = paramiko.RSAKey.generate(key_size)
     log("[OK]", "Ключи сгенерированы.")
 
     if not os.path.exists(local_key_dir):
@@ -277,6 +277,11 @@ def connect_and_setup_ssh(host, username, password, local_key_dir, remote_home_d
     else:
         log("[i]", "Актуальный ключ уже присутствует в списке.")
 
+    # Бэкап перед записью
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    bak_file = f"{auth_keys}.bak.{timestamp}"
+    execute_remote_command(ssh, f"cp {auth_keys} {bak_file}", f"Создание резервной копии: {bak_file}")
+
     # Полная перезапись через cat >
     log("[...]", "Запись обновленного файла authorized_keys...")
     full_content = "\n".join(new_lines) + "\n"
@@ -336,16 +341,19 @@ def main():
     if not os.path.exists(config_path):
         template = {
             "_comment": "Конфигурация скрипта управления SSH-ключами. UUID заполняется автоматически.",
-            "uuid": None,
+            "uuid": str(uuid.uuid4()),
             "local_key_dir": None,
             "servers": [
                 {
                     "name": "Server1",
                     "host": "127.0.0.1",
                     "enabled": True,
+                    "_comment_enabled": "true — сервер обрабатывается, false — сервер временно отключён и пропускается",
                     "username": "root",
                     "password": None,
-                    "remote_home": "/root"
+                    "remote_home": "/root",
+                    "key_size": 3072,
+                    "_comment_key_size": "2048 (слабо), 3072 (стандарт, рекомендовано), 4096 (сверхнадёжно)"
                 }
             ]
         }
@@ -397,6 +405,43 @@ def main():
         log("[!]", "Список серверов пуст.")
         sys.exit(0)
 
+    # Проверка режима --show
+    if "--show" in sys.argv:
+        log("===", "Режим проверки доступности (--show) ===")
+        for server in servers:
+            if not server.get("enabled", True):
+                continue
+
+            host = server.get("host")
+            if not host: continue
+
+            name = server.get("name")
+            display_name = name or host
+            user = server.get("username", "root")
+
+            clean_name = name if name else host.replace(".", "_")
+            key_filename = f"id_rsa_{clean_name}"
+            private_key_path = os.path.join(local_key_dir, key_filename)
+
+            if not os.path.exists(private_key_path):
+                log("[!]", f"{display_name} ({host}) — ключ не найден")
+                continue
+
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                ssh.connect(host, username=user, key_filename=private_key_path, timeout=SSH_TIMEOUT)
+                log("[OK]", f"{display_name} ({host}) — доступен по ключу")
+            except AuthenticationException:
+                log("[!]", f"{display_name} ({host}) — аутентификация отклонена")
+            except Exception as e:
+                log("[X]", f"{display_name} ({host}) — ошибка подключения: {e}")
+            finally:
+                ssh.close()
+
+        log("===", "Проверка завершена ===")
+        sys.exit(0)
+
     failed_servers = []
 
     for server in servers:
@@ -415,6 +460,7 @@ def main():
         user = server.get("username", "root")
         pwd = server.get("password")
         home = server.get("remote_home", "/root")
+        k_size = server.get("key_size", KEY_SIZE)
 
         log("===", f"Обработка сервера: {display_name} ({host})")
 
@@ -427,7 +473,8 @@ def main():
                 local_key_dir=local_key_dir,
                 remote_home_dir=home,
                 instance_id=instance_id,
-                server_name=name
+                server_name=name,
+                key_size=k_size
             )
 
             test_connection(ssh_session)
